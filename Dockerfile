@@ -12,7 +12,7 @@ RUN mkdir -p /app/data /app/uploads
 
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV STORAGE_ROOT=/app
+ENV STORAGE_ROOT=/var/forgeflow
 
 EXPOSE 3000
 
