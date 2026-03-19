@@ -116,10 +116,10 @@ function layout({ title, user, body, pageClass = "" }) {
 </html>`;
 }
 
-function getCurrentUser(req) {
+async function getCurrentUser(req) {
   const cookies = parseCookies(req);
   if (!cookies.sessionId) return null;
-  const session = getSession(cookies.sessionId);
+  const session = await getSession(cookies.sessionId);
   if (!session) return null;
   return getUserById(session.userId);
 }
@@ -232,8 +232,8 @@ function authPage(mode, message = "", user = null) {
   });
 }
 
-function accountPage(user) {
-  const quotes = listQuotesForUser(user.id);
+async function accountPage(user) {
+  const quotes = await listQuotesForUser(user.id);
   const quoteRows = quotes.length
     ? quotes
         .map(
@@ -307,9 +307,9 @@ function accountPage(user) {
   });
 }
 
-function adminPage(user) {
-  const quotes = listQuoteRequests();
-  const training = listTrainingRecords();
+async function adminPage(user) {
+  const quotes = await listQuoteRequests();
+  const training = await listTrainingRecords();
 
   const quoteCards = quotes.length
     ? quotes
@@ -451,7 +451,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
-    const user = getCurrentUser(req);
+    const user = await getCurrentUser(req);
 
     if (pathname === "/styles.css" || pathname === "/app.js") {
       if (serveStatic(res, pathname)) return;
@@ -474,12 +474,12 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/login") {
       const body = parseFormEncoded(await readBody(req));
-      const existing = getUserByEmail(body.email);
+      const existing = await getUserByEmail(body.email);
       if (!existing || existing.password !== body.password) {
         sendHtml(res, authPage("login", "Invalid email or password."));
         return;
       }
-      const session = createSession(existing.id);
+      const session = await createSession(existing.id);
       redirect(res, existing.role === "admin" ? "/admin" : "/account", {
         "Set-Cookie": `sessionId=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax`
       });
@@ -493,12 +493,12 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/signup") {
       const body = parseFormEncoded(await readBody(req));
-      if (getUserByEmail(body.email)) {
+      if (await getUserByEmail(body.email)) {
         sendHtml(res, authPage("signup", "An account already exists for that email."));
         return;
       }
-      const userRecord = createUser(body);
-      const session = createSession(userRecord.id);
+      const userRecord = await createUser(body);
+      const session = await createSession(userRecord.id);
       redirect(res, "/account", {
         "Set-Cookie": `sessionId=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax`
       });
@@ -507,7 +507,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/logout") {
       const cookies = parseCookies(req);
-      if (cookies.sessionId) deleteSession(cookies.sessionId);
+      if (cookies.sessionId) await deleteSession(cookies.sessionId);
       redirect(res, "/", {
         "Set-Cookie": "sessionId=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax"
       });
@@ -519,7 +519,7 @@ const server = http.createServer(async (req, res) => {
         redirect(res, "/login");
         return;
       }
-      sendHtml(res, accountPage(user));
+      sendHtml(res, await accountPage(user));
       return;
     }
 
@@ -528,7 +528,7 @@ const server = http.createServer(async (req, res) => {
         redirect(res, "/login");
         return;
       }
-      sendHtml(res, adminPage(user));
+      sendHtml(res, await adminPage(user));
       return;
     }
 
@@ -543,7 +543,7 @@ const server = http.createServer(async (req, res) => {
         machineType: payload.machineType || "",
         notes: payload.notes || ""
       }, {
-        trainingRecords: listTrainingRecords()
+        trainingRecords: await listTrainingRecords()
       });
       sendJson(res, 200, { estimate, stpFile: fileMeta });
       return;
@@ -564,9 +564,9 @@ const server = http.createServer(async (req, res) => {
         machineType: payload.machineType || "",
         notes: payload.notes || ""
       }, {
-        trainingRecords: listTrainingRecords()
+        trainingRecords: await listTrainingRecords()
       });
-      const quote = addQuoteRequest({
+      const quote = await addQuoteRequest({
         customerId: user.id,
         customerName: user.name,
         customerEmail: user.email,
@@ -595,9 +595,9 @@ const server = http.createServer(async (req, res) => {
         machineType: payload.machineType || "",
         notes: payload.notes || ""
       }, {
-        trainingRecords: listTrainingRecords()
+        trainingRecords: await listTrainingRecords()
       });
-      const trainingRecord = addTrainingRecord({
+      const trainingRecord = await addTrainingRecord({
         material: payload.material,
         quantity: Number(payload.quantity),
         actualPrice: Number(payload.actualPrice),
