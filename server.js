@@ -6,14 +6,17 @@ const {
   addQuoteRequest,
   addTrainingRecord,
   createSession,
-  createUser,
   deleteSession,
+  ensureUserProfile,
   getSession,
   getUserByEmail,
   getUserById,
   listQuoteRequests,
   listQuotesForUser,
-  listTrainingRecords
+  listTrainingRecords,
+  mapAuthError,
+  signInWithFirebaseAuth,
+  signUpWithFirebaseAuth
 } = require("./lib/store");
 const { estimateQuote } = require("./lib/estimator");
 
@@ -549,15 +552,26 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/login") {
       const body = parseFormEncoded(await readBody(req));
-      const existing = await getUserByEmail(body.email);
-      if (!existing || existing.password !== body.password) {
-        sendHtml(res, authPage("login", "Invalid email or password."));
+      try {
+        const authUser = await signInWithFirebaseAuth({
+          email: body.email,
+          password: body.password
+        });
+        const existing = await ensureUserProfile({
+          id: authUser.localId,
+          firebaseUid: authUser.localId,
+          email: body.email,
+          name: body.email.split("@")[0],
+          company: ""
+        });
+        const session = await createSession(existing.id);
+        redirect(res, existing.role === "admin" ? "/admin" : "/account", {
+          "Set-Cookie": `sessionId=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax`
+        });
+      } catch (error) {
+        sendHtml(res, authPage("login", mapAuthError(error)));
         return;
       }
-      const session = await createSession(existing.id);
-      redirect(res, existing.role === "admin" ? "/admin" : "/account", {
-        "Set-Cookie": `sessionId=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax`
-      });
       return;
     }
 
@@ -568,15 +582,26 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/signup") {
       const body = parseFormEncoded(await readBody(req));
-      if (await getUserByEmail(body.email)) {
-        sendHtml(res, authPage("signup", "An account already exists for that email."));
+      try {
+        const authUser = await signUpWithFirebaseAuth({
+          email: body.email,
+          password: body.password
+        });
+        const userRecord = await ensureUserProfile({
+          id: authUser.localId,
+          firebaseUid: authUser.localId,
+          name: body.name,
+          email: body.email,
+          company: body.company || ""
+        });
+        const session = await createSession(userRecord.id);
+        redirect(res, userRecord.role === "admin" ? "/admin" : "/account", {
+          "Set-Cookie": `sessionId=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax`
+        });
+      } catch (error) {
+        sendHtml(res, authPage("signup", mapAuthError(error)));
         return;
       }
-      const userRecord = await createUser(body);
-      const session = await createSession(userRecord.id);
-      redirect(res, "/account", {
-        "Set-Cookie": `sessionId=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax`
-      });
       return;
     }
 
