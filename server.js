@@ -539,7 +539,11 @@ const server = http.createServer(async (req, res) => {
         stpFileName: fileMeta.originalName,
         stpFileSizeKb: fileMeta.sizeKb,
         material: payload.material,
-        quantity: payload.quantity
+        quantity: payload.quantity,
+        machineType: payload.machineType || "",
+        notes: payload.notes || ""
+      }, {
+        trainingRecords: listTrainingRecords()
       });
       sendJson(res, 200, { estimate, stpFile: fileMeta });
       return;
@@ -556,7 +560,11 @@ const server = http.createServer(async (req, res) => {
         stpFileName: fileMeta.originalName,
         stpFileSizeKb: fileMeta.sizeKb,
         material: payload.material,
-        quantity: payload.quantity
+        quantity: payload.quantity,
+        machineType: payload.machineType || "",
+        notes: payload.notes || ""
+      }, {
+        trainingRecords: listTrainingRecords()
       });
       const quote = addQuoteRequest({
         customerId: user.id,
@@ -583,7 +591,11 @@ const server = http.createServer(async (req, res) => {
         stpFileName: fileMeta.originalName,
         stpFileSizeKb: fileMeta.sizeKb,
         material: payload.material,
-        quantity: payload.quantity
+        quantity: payload.quantity,
+        machineType: payload.machineType || "",
+        notes: payload.notes || ""
+      }, {
+        trainingRecords: listTrainingRecords()
       });
       const trainingRecord = addTrainingRecord({
         material: payload.material,
