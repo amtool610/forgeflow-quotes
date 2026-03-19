@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: forgeflow-quotes
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: STORAGE_ROOT
+        value: /var/forgeflow
+    disk:
+      name: forgeflow-storage
+      mountPath: /var/forgeflow
+      sizeGB: 1

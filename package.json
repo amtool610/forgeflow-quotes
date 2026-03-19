@@ -1,0 +1,9 @@
+{
+  "name": "machine-shop-quote-app",
+  "version": "1.0.0",
+  "description": "Machine shop estimating MVP with admin training data intake and customer quote requests.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
