@@ -13,6 +13,81 @@ async function fileToPayload(file) {
   };
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatFileSize(size) {
+  if (!size) return "0 KB";
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function buildFileReview(file) {
+  const text = await file.text();
+  const normalized = text.replace(/\0/g, "");
+  const snippet = normalized.split(/\r?\n/).slice(0, 20).join("\n").trim();
+  const looksLikeStep = /ISO-10303|HEADER|DATA|ENDSEC/i.test(normalized);
+  const extension = (file.name.split(".").pop() || "").toUpperCase();
+
+  return {
+    name: file.name,
+    sizeLabel: formatFileSize(file.size),
+    extension: extension || "FILE",
+    looksLikeStep,
+    snippet: snippet.slice(0, 1800)
+  };
+}
+
+async function bindFileReview(formId, inputName, reviewId) {
+  const form = document.getElementById(formId);
+  const review = document.getElementById(reviewId);
+  if (!form || !review) return;
+
+  const input = form[inputName];
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) {
+      review.classList.add("hidden");
+      review.innerHTML = "";
+      return;
+    }
+
+    try {
+      const details = await buildFileReview(file);
+      review.classList.remove("hidden");
+      review.innerHTML = `
+        <div class="file-review-header">
+          <h3>Uploaded File Review</h3>
+          <span class="pill">${escapeHtml(details.extension)}</span>
+        </div>
+        <div class="file-review-meta">
+          <span><strong>Name:</strong> ${escapeHtml(details.name)}</span>
+          <span><strong>Size:</strong> ${escapeHtml(details.sizeLabel)}</span>
+          <span><strong>Format check:</strong> ${details.looksLikeStep ? "STEP text detected" : "File loaded for upload review"}</span>
+        </div>
+        <div class="file-review-window">
+          <pre>${escapeHtml(details.snippet || "No readable text preview found. The file will still upload with the quote request.")}</pre>
+        </div>
+      `;
+    } catch (error) {
+      review.classList.remove("hidden");
+      review.innerHTML = `
+        <div class="file-review-header">
+          <h3>Uploaded File Review</h3>
+        </div>
+        <div class="file-review-window">
+          <pre>Preview unavailable for this file, but it is still attached and ready for upload.</pre>
+        </div>
+      `;
+    }
+  });
+}
+
 function showResult(targetId, html, isError = false) {
   const target = document.getElementById(targetId);
   if (!target) return;
@@ -97,7 +172,8 @@ async function bindCustomerQuoteForm() {
         "customer-quote-result",
         `<h3>Quote request submitted.</h3>
          <p>Estimated total: ${money(result.quote.estimate.estimatePrice)}</p>
-         <p>Your admin team can now review this request in the dashboard.</p>`
+         <p>Your quote request has been saved to your account history.</p>
+         <p><a class="ghost-button table-button" href="/quotes/${result.quote.id}/pdf" target="_blank" rel="noopener">Download Estimate PDF</a></p>`
       );
       form.reset();
     } catch (error) {
@@ -144,3 +220,5 @@ async function bindTrainingForm() {
 bindEstimatePreview();
 bindCustomerQuoteForm();
 bindTrainingForm();
+bindFileReview("estimate-form-ui", "stpFile", "estimate-file-review");
+bindFileReview("customer-quote-form", "stpFile", "customer-file-review");

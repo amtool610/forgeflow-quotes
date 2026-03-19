@@ -20,11 +20,8 @@ const { estimateQuote } = require("./lib/estimator");
 const port = process.env.PORT || 3000;
 const storageRoot = process.env.STORAGE_ROOT || process.cwd();
 const publicDir = path.join(process.cwd(), "public");
-const uploadsDir = path.join(storageRoot, "uploads");
-
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
+const companyName = process.env.COMPANY_NAME || "SMART";
+const appName = `${companyName} Estimates`;
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -77,6 +74,15 @@ function safeText(value) {
     .replace(/"/g, "&quot;");
 }
 
+function escapePdf(value) {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/\r/g, " ")
+    .replace(/\n/g, " ");
+}
+
 function formatMoney(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -84,10 +90,17 @@ function formatMoney(value) {
   }).format(Number(value || 0));
 }
 
+function formatDate(value) {
+  return new Date(value).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  });
+}
+
 function layout({ title, user, body, pageClass = "" }) {
   const nav = user
     ? `<div class="nav-actions">
-        <span class="pill">${safeText(user.role)}</span>
         <span>${safeText(user.name)}</span>
         <form method="post" action="/logout">
           <button class="ghost-button" type="submit">Logout</button>
@@ -108,12 +121,92 @@ function layout({ title, user, body, pageClass = "" }) {
   </head>
   <body class="${safeText(pageClass)}">
     <header class="site-header">
-      <a class="brand" href="/">ForgeFlow Quotes</a>
+      <a class="brand" href="/">${safeText(appName)}</a>
       ${nav}
     </header>
     ${body}
   </body>
 </html>`;
+}
+
+function buildPdfBuffer({ quote, customer }) {
+  const lines = [
+    companyName,
+    "Estimate",
+    `Estimate ID: ${quote.id}`,
+    `Date: ${formatDate(quote.createdAt)}`,
+    "",
+    `Customer: ${customer.name || quote.customerName || ""}`,
+    `Email: ${customer.email || quote.customerEmail || ""}`,
+    `Company: ${customer.company || ""}`,
+    "",
+    `Part File: ${quote.stpFile.originalName}`,
+    `File Size: ${quote.stpFile.sizeKb} KB`,
+    `Material: ${quote.material}`,
+    `Quantity: ${quote.quantity}`,
+    `Machine Type: ${quote.estimate.machineType || "General machining"}`,
+    "",
+    `Estimated Unit Price: ${formatMoney(quote.estimate.estimatePerUnit)}`,
+    `Estimated Total: ${formatMoney(quote.estimate.estimatePrice)}`,
+    `Estimator Mode: ${quote.estimate.estimatorMode}`,
+    `Confidence: ${quote.estimate.confidence || "n/a"}`,
+    "",
+    "Estimate Summary:",
+    quote.estimate.estimateSummary || "",
+    "",
+    "Notes:",
+    quote.notes || "No additional notes provided.",
+    "",
+    "This estimate is for review only and may be updated after production review."
+  ];
+
+  const contentLines = [];
+  let y = 760;
+  contentLines.push("BT");
+  contentLines.push("/F1 22 Tf");
+  contentLines.push("50 770 Td");
+  contentLines.push(`(${escapePdf(companyName)}) Tj`);
+  contentLines.push("0 -22 Td");
+  contentLines.push("/F1 12 Tf");
+  contentLines.push("(Machining Estimate) Tj");
+
+  y = 720;
+  for (const line of lines.slice(2)) {
+    const fontSize = line === "Estimate Summary:" || line === "Notes:" ? 12 : 11;
+    contentLines.push("ET");
+    contentLines.push("BT");
+    contentLines.push(`/F1 ${fontSize} Tf`);
+    contentLines.push(`50 ${y} Td`);
+    contentLines.push(`(${escapePdf(line)}) Tj`);
+    y -= line ? 16 : 10;
+    if (y < 60) break;
+  }
+  contentLines.push("ET");
+
+  const content = contentLines.join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(content, "utf8")} >>\nstream\n${content}\nendstream`
+  ];
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, "utf8"));
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+
+  const xrefStart = Buffer.byteLength(pdf, "utf8");
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let index = 1; index < offsets.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return Buffer.from(pdf, "utf8");
 }
 
 async function getCurrentUser(req) {
@@ -124,16 +217,11 @@ async function getCurrentUser(req) {
   return getUserById(session.userId);
 }
 
-function saveIncomingFile(file) {
+function buildIncomingFileMeta(file) {
   const extension = path.extname(file.name || ".stp") || ".stp";
-  const fileName = `${Date.now()}-${crypto.randomUUID()}${extension}`;
-  const targetPath = path.join(uploadsDir, fileName);
-  const base64 = (file.base64 || "").split(",").pop();
-  fs.writeFileSync(targetPath, Buffer.from(base64, "base64"));
   return {
     originalName: file.name,
-    storedName: fileName,
-    path: `/uploads/${fileName}`,
+    extension,
     sizeKb: Number(((file.size || 0) / 1024).toFixed(2))
   };
 }
@@ -141,12 +229,12 @@ function saveIncomingFile(file) {
 function landingPage(user) {
   const actions = user
     ? user.role === "admin"
-      ? `<a class="solid-button" href="/admin">Open Admin Dashboard</a>`
+      ? `<a class="solid-button" href="/admin">Open Dashboard</a>`
       : `<a class="solid-button" href="/account">Open My Quotes</a>`
     : `<a class="solid-button" href="/signup">Create Customer Account</a>`;
 
   return layout({
-    title: "ForgeFlow Quotes",
+    title: appName,
     user,
     pageClass: "home-page",
     body: `
@@ -155,8 +243,8 @@ function landingPage(user) {
           <div class="eyebrow">Machine Shop Estimating Platform</div>
           <h1>Upload an STP file and get an instant machining estimate.</h1>
           <p class="lead">
-            The current estimator uses quoting rules based on material, quantity, and file complexity.
-            Later, this same workflow can switch to your trained model for tighter pricing.
+            Upload your part file, choose the material, enter quantity, and get a fast machining estimate.
+            Customer accounts can save quote requests and track estimate history in one place.
           </p>
           <div class="hero-actions">
             ${actions}
@@ -165,14 +253,15 @@ function landingPage(user) {
         </section>
         <section class="panel estimate-panel" id="estimate-form">
           <div class="panel-header">
-            <h2>Customer Estimate Request</h2>
-            <p>Customers must sign in before submitting a quote request. Anyone can test the estimator below.</p>
+            <h2>Instant Estimate</h2>
+            <p>Try the estimator below. Sign in when you are ready to submit a formal quote request.</p>
           </div>
           <form id="estimate-form-ui" class="stack-form">
             <label>
               <span>STP File</span>
               <input type="file" name="stpFile" accept=".stp,.step,.stl,.iges,.igs" required />
             </label>
+            <div class="file-review hidden" id="estimate-file-review"></div>
             <label>
               <span>Material Type</span>
               <input type="text" name="material" placeholder="Aluminum 6061" required />
@@ -187,16 +276,16 @@ function landingPage(user) {
         </section>
         <section class="info-grid">
           <article class="panel">
-            <h3>Admin Training Intake</h3>
-            <p>Admins can store real production data with uploaded STP files, material, quantity, shop notes, and actual price.</p>
+            <h3>Fast Quote Requests</h3>
+            <p>Upload your part file, select a material, set quantity, and get a pricing estimate before submitting.</p>
           </article>
           <article class="panel">
             <h3>Customer Accounts</h3>
             <p>Customers can create an account, request estimates, and track their quote history from one place.</p>
           </article>
           <article class="panel">
-            <h3>Future Model Upgrade</h3>
-            <p>The estimator is already isolated behind a service boundary so you can swap in a trained model later.</p>
+            <h3>Quote History</h3>
+            <p>Keep all quote requests organized by account so repeat orders and revisions are easier to manage.</p>
           </article>
         </section>
       </main>
@@ -208,14 +297,14 @@ function landingPage(user) {
 function authPage(mode, message = "", user = null) {
   const isSignup = mode === "signup";
   return layout({
-    title: isSignup ? "Create Account" : "Login",
+    title: isSignup ? `Create Account | ${appName}` : `Login | ${appName}`,
     user,
     body: `
       <main class="auth-shell">
         <section class="panel auth-panel">
           <div class="panel-header">
-            <h1>${isSignup ? "Create Customer Account" : "Login"}</h1>
-            <p>${isSignup ? "Customers can submit estimate requests and review quote history." : "Use the seeded admin account or your customer login."}</p>
+            <h1>${isSignup ? "Create Account" : "Login"}</h1>
+            <p>${isSignup ? "Create an account to submit quote requests and review quote history." : "Sign in to submit quote requests and review your quote history."}</p>
           </div>
           ${message ? `<div class="notice">${safeText(message)}</div>` : ""}
           <form class="stack-form" method="post" action="${isSignup ? "/signup" : "/login"}">
@@ -225,7 +314,6 @@ function authPage(mode, message = "", user = null) {
             <label><span>Password</span><input type="password" name="password" required /></label>
             <button class="solid-button" type="submit">${isSignup ? "Create Account" : "Login"}</button>
           </form>
-          <p class="muted">Admin seed: admin@machineshop.local / admin123</p>
         </section>
       </main>
     `
@@ -244,11 +332,12 @@ async function accountPage(user) {
               <td>${safeText(quote.quantity)}</td>
               <td>${formatMoney(quote.estimate.estimatePrice)}</td>
               <td>${safeText(new Date(quote.createdAt).toLocaleString())}</td>
+              <td><a class="ghost-button table-button" href="/quotes/${quote.id}/pdf" target="_blank" rel="noopener">Download PDF</a></td>
             </tr>
           `
         )
         .join("")
-    : `<tr><td colspan="5">No estimate requests yet.</td></tr>`;
+    : `<tr><td colspan="6">No estimate requests yet.</td></tr>`;
 
   return layout({
     title: "My Quotes",
@@ -258,13 +347,14 @@ async function accountPage(user) {
         <section class="panel">
           <div class="panel-header">
             <h1>Submit Quote Request</h1>
-            <p>This creates a customer estimate and stores the request for admin review.</p>
+            <p>Upload your part details to generate and save a quote request.</p>
           </div>
           <form id="customer-quote-form" class="stack-form">
             <label>
               <span>STP File</span>
               <input type="file" name="stpFile" accept=".stp,.step,.stl,.iges,.igs" required />
             </label>
+            <div class="file-review hidden" id="customer-file-review"></div>
             <label>
               <span>Material Type</span>
               <input type="text" name="material" required />
@@ -295,6 +385,7 @@ async function accountPage(user) {
                   <th>Qty</th>
                   <th>Estimate</th>
                   <th>Created</th>
+                  <th>PDF</th>
                 </tr>
               </thead>
               <tbody>${quoteRows}</tbody>
@@ -436,17 +527,6 @@ function serveStatic(res, pathname) {
   return true;
 }
 
-function serveUpload(res, pathname) {
-  const target = path.join(uploadsDir, pathname.replace(/^\/uploads\//, ""));
-  if (!target.startsWith(uploadsDir) || !fs.existsSync(target)) {
-    res.writeHead(404);
-    res.end("Not found");
-    return;
-  }
-  res.writeHead(200, { "Content-Type": "application/octet-stream" });
-  res.end(fs.readFileSync(target));
-}
-
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -455,11 +535,6 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/styles.css" || pathname === "/app.js") {
       if (serveStatic(res, pathname)) return;
-    }
-
-    if (pathname.startsWith("/uploads/")) {
-      serveUpload(res, pathname);
-      return;
     }
 
     if (req.method === "GET" && pathname === "/") {
@@ -523,6 +598,28 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && /^\/quotes\/[^/]+\/pdf$/.test(pathname)) {
+      if (!user) {
+        redirect(res, "/login");
+        return;
+      }
+      const quoteId = pathname.split("/")[2];
+      const quotes = user.role === "admin" ? await listQuoteRequests() : await listQuotesForUser(user.id);
+      const quote = quotes.find((item) => item.id === quoteId);
+      if (!quote) {
+        sendJson(res, 404, { error: "Quote not found" });
+        return;
+      }
+      const pdfBuffer = buildPdfBuffer({ quote, customer: user });
+      res.writeHead(200, {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${quote.id}.pdf"`,
+        "Content-Length": pdfBuffer.length
+      });
+      res.end(pdfBuffer);
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/admin") {
       if (!user || user.role !== "admin") {
         redirect(res, "/login");
@@ -534,7 +631,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/estimate-preview") {
       const payload = JSON.parse(await readBody(req));
-      const fileMeta = saveIncomingFile(payload.stpFile);
+      const fileMeta = buildIncomingFileMeta(payload.stpFile);
       const estimate = estimateQuote({
         stpFileName: fileMeta.originalName,
         stpFileSizeKb: fileMeta.sizeKb,
@@ -555,7 +652,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = JSON.parse(await readBody(req));
-      const fileMeta = saveIncomingFile(payload.stpFile);
+      const fileMeta = buildIncomingFileMeta(payload.stpFile);
       const estimate = estimateQuote({
         stpFileName: fileMeta.originalName,
         stpFileSizeKb: fileMeta.sizeKb,
@@ -586,7 +683,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = JSON.parse(await readBody(req));
-      const fileMeta = saveIncomingFile(payload.stpFile);
+      const fileMeta = buildIncomingFileMeta(payload.stpFile);
       const estimate = estimateQuote({
         stpFileName: fileMeta.originalName,
         stpFileSizeKb: fileMeta.sizeKb,
@@ -617,5 +714,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`ForgeFlow Quotes running at http://localhost:${port}`);
+  console.log(`${appName} running at http://localhost:${port}`);
 });
